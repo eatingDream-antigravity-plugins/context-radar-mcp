@@ -1,7 +1,7 @@
 {
   "name": "context-radar-mcp",
   "displayName": "Context Radar",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "Native Rust Antigravity context telemetry, 3-way cold-cache attribution, prefix-safe slice distillation, gated /compact & target:new relay handoff MCP server, and execution guards.",
   "author": {
     "name": "eatingDream",
