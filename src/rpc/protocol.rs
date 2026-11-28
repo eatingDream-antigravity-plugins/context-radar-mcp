@@ -2028,7 +2028,12 @@ impl McpDaemon {
             let eff_theme = effective_theme(&settings.ui.theme, &settings.ui.last_host_theme);
             inject_boot_html(
                 &template,
-                &json!({ "view": "handoff", "lang": lang }),
+                &json!({
+                    "view": "handoff",
+                    "lang": lang,
+                    "theme": settings.ui.theme,
+                    "lastHostTheme": settings.ui.last_host_theme
+                }),
                 eff_theme,
             )
         };

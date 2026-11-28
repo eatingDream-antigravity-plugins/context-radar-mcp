@@ -421,11 +421,11 @@ let ewmaRttMs: number | null = null, serverMs: number | null = snapshot?.[K_SM] 
 let lastSyncTs = !bootOverridden && boot?.mode === K_SN0 ? now() : 0, lastForceTs = 0, spinTimer: TimerHandle | null = null, showSpinner = false;
 let openRowId: string | null = null, loadingKey = "", subTrayRev = 0, bnrPri = false, mountedMode = "", ui: { he: HTMLElement | null } | null = null, lastHandoffSig = "";
 let settingsOpen = false, settingsSaving = false, settingsSig = "";
-let themePref: ThemePreference = parseTheme(snapshot?.[K_US]?.[K_TH]), lastHostTheme: "light" | "dark" = parseHostTheme(snapshot?.[K_US]?.[K_LHT]), themeLocked = false;
+let themePref: ThemePreference = parseTheme(snapshot?.[K_US]?.[K_TH] ?? (boot as { theme?: unknown } | null)?.theme), lastHostTheme: "light" | "dark" = parseHostTheme(snapshot?.[K_US]?.[K_LHT] ?? (boot as { lastHostTheme?: unknown } | null)?.lastHostTheme), themeLocked = 0;
 const openTrays = new Map<string, TrayTab>(), cTurns = new Map<string, TurnsPayload>(), cHot = new Map<string, HotspotsPayload>(), cDist = new Map<string, DistillPayload>(), cAdv = new Map<string, AdvicePayload>(), attemptedGrants = new Set<string>(), rowNodes = new Map<string, RowEntry>(), pinNodes = new Map<string, RowEntry>(), heroChipNodes = new Map<string, HeroChipEntry>();
 const trayMap: Record<TrayTab, Map<string, unknown>> = { turns: cTurns, hotspots: cHot, advice: cAdv };
 let canCallTools = false, inFlightPoll = false, queuedForce = false, pollSeq = 0, inFlightSeq = 0, pollTimer: TimerHandle | null = null, microTimer: TimerHandle | null = null, copiedTimer: TimerHandle | null = null, autoCmpTimer: TimerHandle | null = null;
-let uDot!: HTMLElement, uSwp!: HTMLElement, uMi!: HTMLElement, uMt!: HTMLElement, uAb!: HTMLElement, uGear!: HTMLElement, uRb!: HTMLElement, uRi!: SVGSVGElement, uB!: BannerState, uSet!: HTMLElement, uH!: HeroState, uF!: FilterState, uGr!: HTMLElement, uPG!: HTMLElement, uPGh!: HTMLElement, uPLs!: HTMLElement, uRG!: HTMLElement, uRGh!: HTMLElement, uLs!: HTMLElement, uCap!: HTMLElement, uEm!: EmptyState, uHl!: HTMLElement;
+let uDot!: HTMLElement, uSwp!: HTMLElement, uMi!: HTMLElement, uMt!: HTMLElement, uAb!: HTMLElement, uGear!: HTMLElement, uRb!: HTMLElement, uRi!: SVGSVGElement, uB!: BannerState, uSet!: HTMLElement, uThInd!: HTMLElement, uThBtns: HTMLButtonElement[] = [], uH!: HeroState, uF!: FilterState, uGr!: HTMLElement, uPG!: HTMLElement, uPGh!: HTMLElement, uPLs!: HTMLElement, uRG!: HTMLElement, uRGh!: HTMLElement, uLs!: HTMLElement, uCap!: HTMLElement, uEm!: EmptyState, uHl!: HTMLElement;
 const pg = (): PendingGrant | undefined => snapshot?.[K_PG], cancelAutoCmp = (): void => { if (autoCmpTimer !== null) { ct(autoCmpTimer); autoCmpTimer = null; } };
 
 const callTool = <T = ToolCallResult>(name: string, args: Record<string, unknown>, opts?: ToolCallOptions): Promise<T> => bridge.callServerTool<T>({ name, arguments: args }, opts);
@@ -615,7 +615,7 @@ const clearMaps = (): void => { rowNodes.clear(); pinNodes.clear(); heroChipNode
 const dt0 = (): HTMLSpanElement => sp("dt idle"), id0 = (): HTMLButtonElement => bt("id", "ci", "", "", { h: 1 });
 const ensureDashboardMount = (root: HTMLElement): void => {
   if (mountedMode === DB && ui) return;
-  clearMaps(); mountedMode = DB; settingsSig = "";
+  clearMaps(); mountedMode = DB; settingsSig = ""; uThBtns = [];
   const [emb, dot] = mkEmb(), mkG = (): [HTMLDivElement, HTMLDivElement, HTMLDivElement] => { const gh = hdv("kl"), ls = dv("cd ls"); return [hdv("c g6", gh, ls), gh, ls]; };
   uDot = dot; uSwp = hdv("swp"); uMi = hd0("span", "mi e"); uMt = sp("m s t3 e"); uAb = bt("id ct0", "aut", "");
   uGear = bt("ib ct0", "cfg", sv(14, ["M8 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z", "M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8"]));
@@ -667,18 +667,22 @@ const patchBannerSlot = (): void => {
 
 const mkSel = (k: string, opts: Array<[string | number, string]>, cur: string | number): HTMLSelectElement => { const s = h("select", "si", { "data-s": k }, ...opts.map(([v, t]) => h("option", "", { value: v }, t))); s.value = S(cur); return s; };
 const numI = (k: string, v: number, stp: number, mn: number, mx: number): HTMLInputElement => h("input", "si", { "data-s": k, type: "number", step: stp, min: mn, max: mx, value: S(v) });
+const syncThemeUi = (): void => {
+  if (!uThInd || !uThBtns.length) return;
+  uThInd.style.transform = `translateX(${M.max(0, THS.indexOf(themePref)) * 100}%)`;
+  uThBtns.forEach((b, i) => { const on = themePref === THS[i]; cl(b, "on", on); ar(b, "checked", S(on)); });
+};
 const patchSettingsDrawer = (): void => {
   if (!uSet) return;
   hd(uSet, !settingsOpen); cl(uGear, "on", settingsOpen); ar(uGear, "label", L(31)); ar(uGear, "expanded", S(settingsOpen));
   if (!settingsOpen) return;
   const u = snapshot?.[K_US] || {}, spath = snapshot?.settings_path || "", serr = snapshot?.settings_error || "";
-  const sig = S([lang, themePref, settingsSaving, spath, serr, JSON.stringify(u), allowAutoHandoff, canCallTools]);
-  if (sig === settingsSig) return;
+  const sig = S([lang, settingsSaving, spath, serr, JSON.stringify(u), allowAutoHandoff, canCallTools]);
+  if (sig === settingsSig) { syncThemeUi(); return; }
   settingsSig = sig;
   const fd = (l: string, c: HTMLElement): HTMLLabelElement => h("label", "sf", 0, sp("s t2", tr(l)), c), dOpt = (v: number): [number, string] => [v, v < 0 ? tr("Paused|暂停") : v ? fmtDur(v) : L(37)], z = isZh();
   const [tsg, tsth, tbs] = mkSeg((i) => bt(`sb${themePref === THS[i] ? " on" : ""}`, "thm", tr(["Follow Agy|跟随 Agy", "Light|浅色", "Dark|深色"][i]), THS[i], { role: "radio", "aria-checked": S(themePref === THS[i]) }));
-  tsg.className = "sg"; tsg.setAttribute("role", "radiogroup"); ar(tsg, "label", tr("Theme|外观")); tsth.style.transform = `translateX(${M.max(0, THS.indexOf(themePref)) * 100}%)`;
-  void tbs;
+  tsg.className = "sg"; tsg.setAttribute("role", "radiogroup"); ar(tsg, "label", tr("Theme|外观")); uThInd = tsth; uThBtns = tbs; syncThemeUi();
   const sels: Array<[string, string, Array<[string | number, string]>, string | number]> = [
     ["lang", "Language|语言", [["auto", L(37)], ["en", "English"], ["zh-CN", "简体中文"]], u.lang || "auto"],
     [K_CC2, "Currency|货币", [["auto", L(37)], ["USD", "USD $"], ["CNY", "CNY ¥"]], u[K_CC2] || "auto"],
@@ -1004,8 +1008,10 @@ const ACT: Record<string, (id: string, ev: MouseEvent) => unknown> = {
   cfg: () => { settingsOpen = !settingsOpen; settingsSig = ""; render(); },
   thm: (id) => {
     const next = parseTheme(id);
-    themeLocked = true; themePref = next; bridge.setThemePreference?.(next); settingsSig = ""; render();
-    if (canCallTools) void uiAct({ action: K_SP, [K_TH]: next }).then((r) => { const sc = r?.[K_SC2] as SetPrefsPayload | undefined; if (sc?.[K_US] && snapshot) Object.assign(snapshot, sc); }).catch(() => {});
+    themePref = next; bridge.setThemePreference?.(next); syncThemeUi();
+    if (!canCallTools) return;
+    const g = ++themeLocked;
+    void uiAct({ action: K_SP, [K_TH]: next }).then((r) => { const sc = r?.[K_SC2] as SetPrefsPayload | undefined; if (sc?.[K_US] && snapshot) Object.assign(snapshot, sc); }).catch(() => {}).finally(() => { if (themeLocked === g) themeLocked = 0; });
   },
   svs: saveSettings, csp: (p) => p && copyText(p, L(1)), tab: (id) => id && setFilterTab(id as FilterTab),
   aho: toggleAutoHandoff, row: (id) => { if (id) { openRowId = openRowId === id ? null : id; render(); } },
@@ -1088,10 +1094,10 @@ bridge.ontoolresult = (result) => {
 
 const syncHostContext = (ctx: HostContext | null | undefined): void => { if (syncLoc(ctx?.locale)) render(); };
 const persistHostTheme = (ht: "light" | "dark"): void => {
-  if (ht !== lastHostTheme) {
-    lastHostTheme = ht;
-    if (canCallTools) void uiAct({ action: K_SP, [K_LHT]: ht }).catch(() => {});
-  }
+  if (!canCallTools || ht === lastHostTheme) return;
+  const prev = lastHostTheme;
+  lastHostTheme = ht;
+  void uiAct({ action: K_SP, [K_LHT]: ht }).catch(() => { if (lastHostTheme === ht) lastHostTheme = prev; });
 };
 bridge.onhostthemechanged = persistHostTheme;
 
