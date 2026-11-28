@@ -421,7 +421,7 @@ let ewmaRttMs: number | null = null, serverMs: number | null = snapshot?.[K_SM] 
 let lastSyncTs = !bootOverridden && boot?.mode === K_SN0 ? now() : 0, lastForceTs = 0, spinTimer: TimerHandle | null = null, showSpinner = false;
 let openRowId: string | null = null, loadingKey = "", subTrayRev = 0, bnrPri = false, mountedMode = "", ui: { he: HTMLElement | null } | null = null, lastHandoffSig = "";
 let settingsOpen = false, settingsSaving = false, settingsSig = "";
-let themePref: ThemePreference = parseTheme(snapshot?.[K_US]?.[K_TH] ?? (boot as { theme?: unknown } | null)?.theme), lastHostTheme: "light" | "dark" = parseHostTheme(snapshot?.[K_US]?.[K_LHT] ?? (boot as { lastHostTheme?: unknown } | null)?.lastHostTheme), themeLocked = 0;
+let themePref: ThemePreference = parseTheme(snapshot?.[K_US]?.[K_TH] ?? (boot as { theme?: unknown } | null)?.theme), lastHostTheme: "light" | "dark" = parseHostTheme(snapshot?.[K_US]?.[K_LHT] ?? (boot as { lastHostTheme?: unknown } | null)?.lastHostTheme), themeLocked = 0, themeSeq = 0;
 const openTrays = new Map<string, TrayTab>(), cTurns = new Map<string, TurnsPayload>(), cHot = new Map<string, HotspotsPayload>(), cDist = new Map<string, DistillPayload>(), cAdv = new Map<string, AdvicePayload>(), attemptedGrants = new Set<string>(), rowNodes = new Map<string, RowEntry>(), pinNodes = new Map<string, RowEntry>(), heroChipNodes = new Map<string, HeroChipEntry>();
 const trayMap: Record<TrayTab, Map<string, unknown>> = { turns: cTurns, hotspots: cHot, advice: cAdv };
 let canCallTools = false, inFlightPoll = false, queuedForce = false, pollSeq = 0, inFlightSeq = 0, pollTimer: TimerHandle | null = null, microTimer: TimerHandle | null = null, copiedTimer: TimerHandle | null = null, autoCmpTimer: TimerHandle | null = null;
@@ -1010,7 +1010,7 @@ const ACT: Record<string, (id: string, ev: MouseEvent) => unknown> = {
     const next = parseTheme(id);
     themePref = next; bridge.setThemePreference?.(next); syncThemeUi();
     if (!canCallTools) return;
-    const g = ++themeLocked;
+    const g = ++themeSeq; themeLocked = g;
     void uiAct({ action: K_SP, [K_TH]: next }).then((r) => { const sc = r?.[K_SC2] as SetPrefsPayload | undefined; if (sc?.[K_US] && snapshot) Object.assign(snapshot, sc); }).catch(() => {}).finally(() => { if (themeLocked === g) themeLocked = 0; });
   },
   svs: saveSettings, csp: (p) => p && copyText(p, L(1)), tab: (id) => id && setFilterTab(id as FilterTab),
@@ -1097,7 +1097,7 @@ const persistHostTheme = (ht: "light" | "dark"): void => {
   if (!canCallTools || ht === lastHostTheme) return;
   const prev = lastHostTheme;
   lastHostTheme = ht;
-  void uiAct({ action: K_SP, [K_LHT]: ht }).catch(() => { if (lastHostTheme === ht) lastHostTheme = prev; });
+  void uiAct({ action: K_SP, [K_LHT]: ht }).then((r) => { if (r?.[K_ERR] && lastHostTheme === ht) lastHostTheme = prev; }).catch(() => { if (lastHostTheme === ht) lastHostTheme = prev; });
 };
 bridge.onhostthemechanged = persistHostTheme;
 
