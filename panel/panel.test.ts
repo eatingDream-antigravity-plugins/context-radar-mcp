@@ -170,7 +170,7 @@ test("panel/dist/panel.html meets Lucid Indigo Panel Kit invariants, <=64 KiB bu
   assert.equal(/https?:\/\//i.test(html), false, "must contain zero http/https URLs");
   assert.equal(/<link\b/i.test(html), false, "must contain zero external <link> tags");
   assert.equal(/<script[^>]+src=/i.test(html), false, "must contain zero external <script src>");
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const scripts = [...html.matchAll(/<script(?:\s+type="module")?>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   assert.equal(scripts.length, 1, "panel.html must merge into exactly ONE inline <script>");
   assert.doesNotThrow(() => new vm.Script(scripts[0]), "single bundled <script> must be valid syntax");
   const injected = scripts[0].replace("/*__CONTEXT_RADAR_BOOT__*/", 'window.__CONTEXT_RADAR_BOOT__={"mode":"snapshot"};');
@@ -488,6 +488,9 @@ test("non-force periodic poll updates DOM on digest change, skips render on unch
     K_AAH: "allow_auto_handoff", K_ST: "settings", K_PG: "pending_grant", K_DIG: "digest",
     K_AR: "archived", K_SN0: "snapshot", K_PF: "context_radar_", K_SC2: "structuredContent",
     K_SM: "server_ms", K_ERR: "isError", K_GA: "generated_at", K_PG2: "pending_grant",
+    K_US: "ui_settings", K_TH: "theme", K_LHT: "last_host_theme", themeLocked: true, themePref: "system", lastHostTheme: "dark", bridge: {},
+    parseTheme: (v: unknown) => (v === "light" || v === "dark" ? v : "system"),
+    parseHostTheme: (v: unknown) => (v === "light" ? "light" : "dark"),
     viewMode: "dashboard", canCallTools: true, inFlightPoll: false, queuedForce: false, pollSeq: 0, inFlightSeq: 0,
     refreshing: false, showSpinner: false, spinTimer: null, filterTab: "active",
     lastDigest: "d1",
@@ -1021,10 +1024,11 @@ test("Astra P1/P2 & 440px visual QA: default canCallTools=false, set_prefs isErr
   assert.match(viewSrc, /let\s+canCallTools\s*=\s*false\b/, "canCallTools must default to false");
   assert.match(viewSrc, /canCallTools\s*=\s*!!caps\?\.serverTools\b/, "canCallTools must require explicit hostCapabilities.serverTools");
 
-  // 2. 440px visual QA CSS & DOM invariants (480px breakpoint, hero wrap, 2+1 KPI grid, docked subagent wrap)
+  // 2. 440px visual QA CSS & DOM invariants (480px breakpoint, hero wrap, 3-column compact KPI strip, docked subagent wrap)
   assert.ok(cssSrc.includes("@media(max-width:480px)"), "narrow-pane breakpoint must be raised to 480px");
   assert.ok(cssSrc.includes(".hero>.jb{flex-wrap:wrap}"), "hero header must wrap cleanly <=480px");
-  assert.ok(cssSrc.includes(".pls>.pl:last-child{grid-column:1/-1}"), "Speed & Cost KPI must span full width <=480px");
+  assert.equal(cssSrc.includes(".pls>.pl:last-child{grid-column:1/-1}"), false, "3-pill KPI strip must never leave an orphan full-row pill <=480px");
+  assert.ok(cssSrc.includes(".pls{grid-template-columns:repeat(3,minmax(0,1fr))"), "3-pill KPI strip must stay 3 columns down to 350px");
   assert.ok(viewSrc.includes('hCh = dv("r w")'), "docked subagent pill row must wrap cleanly");
 
   // 3. Closed status localizes cleanly with Details disclosure
@@ -1206,7 +1210,11 @@ test("weak-net SWR boot: localStorage hydration/redaction, fresh-boot coalescing
     const box = {
       boot: opts.boot,
       HC: "handoff_card", DB: "dashboard", K_SN0: "snapshot", K_DIG: "digest", K_PG: "pending_grant",
-      K_ST: "settings", K_AAH: "allow_auto_handoff", DE: { lang: "en" }, langLocked: true, lang: "en",
+      K_ST: "settings", K_AAH: "allow_auto_handoff", K_US: "ui_settings", K_TH: "theme", K_LHT: "last_host_theme",
+      themeLocked: true, themePref: "system", lastHostTheme: "dark", bridge: {},
+      parseTheme: (v: unknown) => (v === "light" || v === "dark" ? v : "system"),
+      parseHostTheme: (v: unknown) => (v === "light" ? "light" : "dark"),
+      DE: { lang: "en" }, langLocked: true, lang: "en",
       now: () => opts.nowMs,
       parseLoc: () => "",
       maybeAutoRelay: () => {},
@@ -1342,6 +1350,9 @@ test("weak-net SWR boot: localStorage hydration/redaction, fresh-boot coalescing
     ct: () => { cancelledCount += 1; },
     num: (v: unknown) => Number(v) || 0, tr: (e: string) => e, L: (i: number) => `L${i}`, parseLoc: () => "",
     K_AAH: "allow_auto_handoff", K_ST: "settings", K_US: "ui_settings", K_PI: "poll_interval_sec",
+    K_TH: "theme", K_LHT: "last_host_theme", themeLocked: true, themePref: "system", lastHostTheme: "dark", bridge: {},
+    parseTheme: (v: unknown) => (v === "light" || v === "dark" ? v : "system"),
+    parseHostTheme: (v: unknown) => (v === "light" ? "light" : "dark"),
     K_PG: "pending_grant", K_DIG: "digest", K_AR: "archived", K_SN0: "snapshot",
     K_SC2: "structuredContent", K_SM: "server_ms", K_ERR: "isError", K_GA: "generated_at",
     viewMode: "dashboard", autoRefresh: true, canCallTools: true,

@@ -144,6 +144,16 @@ pub fn tools_spec() -> Value {
                         "maximum": 2000000,
                         "description": "When action='set_prefs', token threshold for suggesting /compact."
                     },
+                    "theme": {
+                        "type": "string",
+                        "enum": ["system", "light", "dark"],
+                        "description": "When action='set_prefs', persist panel color theme preference ('system', 'light', or 'dark')."
+                    },
+                    "last_host_theme": {
+                        "type": "string",
+                        "enum": ["light", "dark"],
+                        "description": "When action='set_prefs', persist last resolved Antigravity host theme ('light' or 'dark') for Byte-0 SSR."
+                    },
                     "grant_id": {
                         "type": "string",
                         "description": "Single-use relay grant ID."

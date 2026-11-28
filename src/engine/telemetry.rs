@@ -1563,6 +1563,8 @@ pub struct UiSettingsSnapshot {
     pub bg_poll_interval_sec: i64,
     pub allow_auto_handoff: bool,
     pub compact_threshold: u64,
+    pub theme: String,
+    pub last_host_theme: String,
 }
 
 fn is_false(b: &bool) -> bool {

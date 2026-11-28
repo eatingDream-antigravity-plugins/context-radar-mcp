@@ -1,7 +1,7 @@
 import {
   App,
-  applyHostContext,
   type HostContext,
+  type ThemePreference,
   type ToolCallOptions,
   type ToolCallResult,
 } from "./kit/bridge.ts";
@@ -126,6 +126,8 @@ interface UiSettings {
   bg_poll_interval_sec?: number;
   allow_auto_handoff?: boolean;
   compact_threshold?: number;
+  theme?: string;
+  last_host_theme?: string;
 }
 
 interface SnapshotData {
@@ -376,7 +378,10 @@ const K_CC = "compact_command", K_CS = "compact_status", K_SC = "suggest_compact
 const K_SC2 = "structuredContent", K_GID = "grant_id", K_SN = "saved_note_path", K_SA = "subagents", K_AR = "archived";
 const K_WS = "workspace", K_WSS = "workspaces", K_CT = "context_tokens", K_RCT = "recommend_compact_tokens";
 const K_ST = "settings", K_US = "ui_settings", K_ACT = "is_active", K_PG = "pending_grant", K_DW = "daemon_workspace", K_GA = "generated_at", K_PK = "pricing_known", K_PF = "context_radar_";
-const K_CC2 = "currency_code", K_FX = "fx_rate", K_PI = "poll_interval_sec", K_BP = "bg_poll_interval_sec", K_CTH = "compact_threshold";
+const K_CC2 = "currency_code", K_FX = "fx_rate", K_PI = "poll_interval_sec", K_BP = "bg_poll_interval_sec", K_CTH = "compact_threshold", K_TH = "theme", K_LHT = "last_host_theme";
+const THS: readonly ThemePreference[] = ["system", "light", "dark"];
+const parseTheme = (v: unknown): ThemePreference => (v === "light" || v === "dark" ? v : "system");
+const parseHostTheme = (v: unknown): "light" | "dark" => (v === "light" ? "light" : "dark");
 const DEF_T: [number, number, number] = [30e4, 36e4, 43e4], thrs = (it: SessionItem): [number | undefined, number | undefined, number | undefined] => [it.min_compact_tokens, it[K_RCT], it.urgent_compact_tokens], TABS: readonly TrayTab[] = ["turns", K_HS, "advice"], FIDS: readonly FilterTab[] = ["active", "subs", K_AR];
 
 let viewMode: string = boot?.view === "handoff" ? HC : DB;
@@ -416,10 +421,11 @@ let ewmaRttMs: number | null = null, serverMs: number | null = snapshot?.[K_SM] 
 let lastSyncTs = !bootOverridden && boot?.mode === K_SN0 ? now() : 0, lastForceTs = 0, spinTimer: TimerHandle | null = null, showSpinner = false;
 let openRowId: string | null = null, loadingKey = "", subTrayRev = 0, bnrPri = false, mountedMode = "", ui: { he: HTMLElement | null } | null = null, lastHandoffSig = "";
 let settingsOpen = false, settingsSaving = false, settingsSig = "";
+let themePref: ThemePreference = parseTheme(snapshot?.[K_US]?.[K_TH] ?? (boot as { theme?: unknown } | null)?.theme), lastHostTheme: "light" | "dark" = parseHostTheme(snapshot?.[K_US]?.[K_LHT] ?? (boot as { lastHostTheme?: unknown } | null)?.lastHostTheme), themeLocked = 0, themeSeq = 0;
 const openTrays = new Map<string, TrayTab>(), cTurns = new Map<string, TurnsPayload>(), cHot = new Map<string, HotspotsPayload>(), cDist = new Map<string, DistillPayload>(), cAdv = new Map<string, AdvicePayload>(), attemptedGrants = new Set<string>(), rowNodes = new Map<string, RowEntry>(), pinNodes = new Map<string, RowEntry>(), heroChipNodes = new Map<string, HeroChipEntry>();
 const trayMap: Record<TrayTab, Map<string, unknown>> = { turns: cTurns, hotspots: cHot, advice: cAdv };
 let canCallTools = false, inFlightPoll = false, queuedForce = false, pollSeq = 0, inFlightSeq = 0, pollTimer: TimerHandle | null = null, microTimer: TimerHandle | null = null, copiedTimer: TimerHandle | null = null, autoCmpTimer: TimerHandle | null = null;
-let uDot!: HTMLElement, uSwp!: HTMLElement, uMi!: HTMLElement, uMt!: HTMLElement, uAb!: HTMLElement, uGear!: HTMLElement, uRb!: HTMLElement, uRi!: SVGSVGElement, uB!: BannerState, uSet!: HTMLElement, uH!: HeroState, uF!: FilterState, uPG!: HTMLElement, uPGh!: HTMLElement, uPLs!: HTMLElement, uRG!: HTMLElement, uRGh!: HTMLElement, uLs!: HTMLElement, uCap!: HTMLElement, uEm!: EmptyState, uHl!: HTMLElement;
+let uDot!: HTMLElement, uSwp!: HTMLElement, uMi!: HTMLElement, uMt!: HTMLElement, uAb!: HTMLElement, uGear!: HTMLElement, uRb!: HTMLElement, uRi!: SVGSVGElement, uB!: BannerState, uSet!: HTMLElement, uThInd!: HTMLElement, uThBtns: HTMLButtonElement[] = [], uH!: HeroState, uF!: FilterState, uGr!: HTMLElement, uPG!: HTMLElement, uPGh!: HTMLElement, uPLs!: HTMLElement, uRG!: HTMLElement, uRGh!: HTMLElement, uLs!: HTMLElement, uCap!: HTMLElement, uEm!: EmptyState, uHl!: HTMLElement;
 const pg = (): PendingGrant | undefined => snapshot?.[K_PG], cancelAutoCmp = (): void => { if (autoCmpTimer !== null) { ct(autoCmpTimer); autoCmpTimer = null; } };
 
 const callTool = <T = ToolCallResult>(name: string, args: Record<string, unknown>, opts?: ToolCallOptions): Promise<T> => bridge.callServerTool<T>({ name, arguments: args }, opts);
@@ -525,7 +531,7 @@ const buildSubTray = (it: SessionItem): HTMLDivElement | null => {
     if (!d?.found) return msg(d?.error || nd);
     const list = (d[K_HS] || []).slice(0, 5), rec = d.recommended_distill_range, spath = cDist.get(cid)?.[K_SN], busy = loadingKey === `distill:${cid}`, mx = M.max(1, ...list.map((x) => num(x.delta_tokens)));
     const rows = list.length ? list.map((x) => { const dl = num(x.delta_tokens), r = dl / mx; return h("div", "r g8", { title: fmtK(x.context_after) }, sp("m s b k", `#${num(x.turn)}`), sp("f e t2", `s${num(x.step_idx)} · ${x.cause || ""}`), sp("ht", h("span", `bf${r >= .85 ? " er" : r >= .6 ? " wn" : ""}`, { s: `width:${M.max(8, rd(r * 100))}%` })), sp("m s b cx", `+${fmtK(dl)}`)); }) : [dv("t2", "—")];
-    return dv("bx", dv("kl", L(41)), ...rows, spath && dv("wr ok tc", "✓ ", h("code", "", 0, spath)), dv("ac ct0", mkB("s", "dst", busy ? L(0) : rec ? (isZh() ? `保存第 ${rec[0]}–${rec[1]} 轮要点` : `Save turns ${rec[0]}–${rec[1]}`) : L(32), cid, { disabled: busy }), spath && mkB("", "cdp", tr("Copy|复制"), cid)));
+    return dv("bx", dv("kl", L(41)), ...rows, spath && dv("wr ok tc", "✓ ", h("code", "", 0, spath)), dv("ac ct0 abg", mkB("s", "dst", busy ? L(0) : rec ? (isZh() ? `保存第 ${rec[0]}–${rec[1]} 轮要点` : `Save turns ${rec[0]}–${rec[1]}`) : L(32), cid, { disabled: busy }), spath && mkB("", "cdp", tr("Copy|复制"), cid)));
   }
   const d = rawD as AdvicePayload | undefined;
   if (!d?.found) return msg(d?.reason || "—");
@@ -533,7 +539,7 @@ const buildSubTray = (it: SessionItem): HTMLDivElement | null => {
   return dv("bx", dv("ac", sp(`bd ${ok ? "ok" : "wn"}`, L(ok ? 4 : 3)), sp(`bd ${rs > 0 ? "wn" : "ok"}`, subTxt(rs))),
     dv("t2", `${thrs(it).map((v, i) => `${((num(v) || DEF_T[i]) / 1e3) | 0}k`).join("/")} · >=${num(d.break_even_turns)}${tr("t| 轮")}${d[K_PK] !== false ? ` · ${fmtMoney(d.compact_overhead_usd, d.compact_overhead_cny)} / -${fmtMoney(d.per_turn_saving_usd, d.per_turn_saving_cny, 3)}/${tr("t|轮")}` : ""}`),
     ...[d.headline && dv("wr", d.headline), ...(d.gate_reasons || []).map((r) => dv("t2 wr", `· ${r}`))].filter(Boolean),
-    dv("ac", ok ? mkB("s", "up", L(ds ? 0 : 22), cid, { disabled: ds }) : mkB("s", "cc", L(2)), ok && canMessage && !rs && sameWs(it[K_WS], it[K_WSS]) && mkB(pc0(!bnrPri), "ul", L(12), cid, { disabled: ds }), mkSw(L(6))));
+    dv("ac abg", ok ? mkB("s", "up", L(ds ? 0 : 22), cid, { disabled: ds }) : mkB("s", "cc", L(2)), ok && canMessage && !rs && sameWs(it[K_WS], it[K_WSS]) && mkB(pc0(!bnrPri), "ul", L(12), cid, { disabled: ds }), mkSw(L(6))));
 };
 
 const getLim = (it: SessionItem): number => num(it.context_limit || snapshot?.thresholds?.max) || 512e3;
@@ -542,7 +548,7 @@ const mountDetailBlock = (): DetailBlock => {
   const gt = h("div", "gt", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100 }, gf, ...tks);
   const g1 = sp("e"), g2 = sp("k"), kf = dv("bf"), k1 = sp("e"), k2 = sp("m k");
   const ws: PillTuple[] = [0, 1, 2].map(() => { const a = sp("kl"), b = sp("m b e"), c = sp("m s t2 e"); return [dv("pl", a, b, c), a, b, c]; });
-  const tm = hdv("t2 wr"), wn = hdv("bnr wr"), [sg, sth, tbs] = mkSeg((i) => bt("sb", `t-${TABS[i]}`, "")), trE = hdv(), ft = hdv("ac je bt0");
+  const tm = hdv("t2 wr"), wn = hdv("bnr wr"), [sg, sth, tbs] = mkSeg((i) => bt("sb", `t-${TABS[i]}`, "")), trE = hdv(), ft = hdv("ac je bt0 abg");
   return [dv("dl", dv("hb", dv("c hl k", hn, hs), dv("f c g6", dv("c g4", gt, dv("jb s t3", g1, g2)), dv("c g4", dv("kt", kf), dv("jb s t2", k1, k2)))), dv("pls", ws[0][0], ws[1][0], ws[2][0]), tm, wn, sg, trE, ft), hn, hs, gt, gf, tks, g1, g2, kf, k1, k2, ws, tm, wn, sth, tbs, trE, ft, "", ""];
 };
 
@@ -609,14 +615,14 @@ const clearMaps = (): void => { rowNodes.clear(); pinNodes.clear(); heroChipNode
 const dt0 = (): HTMLSpanElement => sp("dt idle"), id0 = (): HTMLButtonElement => bt("id", "ci", "", "", { h: 1 });
 const ensureDashboardMount = (root: HTMLElement): void => {
   if (mountedMode === DB && ui) return;
-  clearMaps(); mountedMode = DB; settingsSig = "";
+  clearMaps(); mountedMode = DB; settingsSig = ""; uThBtns = [];
   const [emb, dot] = mkEmb(), mkG = (): [HTMLDivElement, HTMLDivElement, HTMLDivElement] => { const gh = hdv("kl"), ls = dv("cd ls"); return [hdv("c g6", gh, ls), gh, ls]; };
   uDot = dot; uSwp = hdv("swp"); uMi = hd0("span", "mi e"); uMt = sp("m s t3 e"); uAb = bt("id ct0", "aut", "");
   uGear = bt("ib ct0", "cfg", sv(14, ["M8 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z", "M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8"]));
   uRi = sv(14, ["M13 8a5 5 0 1 1-1.3-3.4M13 2.5v2.6h-2.6"]); uRb = bt("ib", "ref", uRi);
   const hdEl = h("header", "hd", 0, emb, h("h1", "wm", 0, "Context Radar"), dv("r f", uMi, uMt), dv("r k", uAb, uGear, uRb), uSwp);
 
-  const bDt = dt0(), bTt = sp("b e"), bId = id0(), bBg = hb("in"), bDs = bt("ib", "dis", "×", "", al(L(21))), bBd = hdv("c g4 t2"), bAc = hdv("ac je");
+  const bDt = dt0(), bTt = sp("b e"), bId = id0(), bBg = hb("in"), bDs = bt("ib", "dis", "×", "", al(L(21))), bBd = hdv("c g4 t2"), bAc = hdv("ac je abg");
   const bnr = h("div", "bnr", { "data-k": "in", h: 1 }, dv("jb", dv("r f", bDt, bTt, bId), dv("r k", bBg, bDs)), bBd, bAc);
   uB = [bnr, bDt, bTt, bId, bBg, bDs, bBd, bAc, ""];
   uSet = hdv("cd");
@@ -630,7 +636,7 @@ const ensureDashboardMount = (root: HTMLElement): void => {
   uF = [br, sg, sth, tabs, sw, sw.lastElementChild as HTMLElement];
   [uPG, uPGh, uPLs] = mkG(); [uRG, uRGh, uLs] = mkG(); uCap = hdv("cf"); uRG.appendChild(uCap);
   const emP = dv(""), emB = mkB("s", "ref", L(20)), em = hdv("cd em", mkEmb(0, 1)[0], emP, emB);
-  uEm = [em, emP, emB]; setCh(root, [dv("c sh", hdEl, bnr, uSet, he, br, dv("c g10", uPG, uRG), em)]); ui = { he };
+  uEm = [em, emP, emB]; uGr = dv("gd", uPG, uRG); setCh(root, [dv("c sh", hdEl, bnr, uSet, he, br, uGr, em)]); ui = { he };
 };
 
 const ensureHandoffMount = (root: HTMLElement): void => { if (mountedMode === HC && ui) return; clearMaps(); lastHandoffSig = ""; mountedMode = HC; uHl = dv(""); setCh(root, [h("div", "c sh", { s: "padding:4px" }, uHl)]); ui = { he: null }; };
@@ -661,15 +667,22 @@ const patchBannerSlot = (): void => {
 
 const mkSel = (k: string, opts: Array<[string | number, string]>, cur: string | number): HTMLSelectElement => { const s = h("select", "si", { "data-s": k }, ...opts.map(([v, t]) => h("option", "", { value: v }, t))); s.value = S(cur); return s; };
 const numI = (k: string, v: number, stp: number, mn: number, mx: number): HTMLInputElement => h("input", "si", { "data-s": k, type: "number", step: stp, min: mn, max: mx, value: S(v) });
+const syncThemeUi = (): void => {
+  if (!uThInd || !uThBtns.length) return;
+  uThInd.style.transform = `translateX(${M.max(0, THS.indexOf(themePref)) * 100}%)`;
+  uThBtns.forEach((b, i) => { const on = themePref === THS[i]; cl(b, "on", on); ar(b, "checked", S(on)); });
+};
 const patchSettingsDrawer = (): void => {
   if (!uSet) return;
   hd(uSet, !settingsOpen); cl(uGear, "on", settingsOpen); ar(uGear, "label", L(31)); ar(uGear, "expanded", S(settingsOpen));
   if (!settingsOpen) return;
   const u = snapshot?.[K_US] || {}, spath = snapshot?.settings_path || "", serr = snapshot?.settings_error || "";
   const sig = S([lang, settingsSaving, spath, serr, JSON.stringify(u), allowAutoHandoff, canCallTools]);
-  if (sig === settingsSig) return;
+  if (sig === settingsSig) { syncThemeUi(); return; }
   settingsSig = sig;
   const fd = (l: string, c: HTMLElement): HTMLLabelElement => h("label", "sf", 0, sp("s t2", tr(l)), c), dOpt = (v: number): [number, string] => [v, v < 0 ? tr("Paused|暂停") : v ? fmtDur(v) : L(37)], z = isZh();
+  const [tsg, tsth, tbs] = mkSeg((i) => bt(`sb${themePref === THS[i] ? " on" : ""}`, "thm", tr(["Follow Agy|跟随 Agy", "Light|浅色", "Dark|深色"][i]), THS[i], { role: "radio", "aria-checked": S(themePref === THS[i]) }));
+  tsg.className = "sg"; tsg.setAttribute("role", "radiogroup"); ar(tsg, "label", tr("Theme|外观")); uThInd = tsth; uThBtns = tbs; syncThemeUi();
   const sels: Array<[string, string, Array<[string | number, string]>, string | number]> = [
     ["lang", "Language|语言", [["auto", L(37)], ["en", "English"], ["zh-CN", "简体中文"]], u.lang || "auto"],
     [K_CC2, "Currency|货币", [["auto", L(37)], ["USD", "USD $"], ["CNY", "CNY ¥"]], u[K_CC2] || "auto"],
@@ -679,6 +692,7 @@ const patchSettingsDrawer = (): void => {
   setCh(uSet, [
     dv("jb", sp("wm", L(31)), bt("ib", "cfg", "×", "", al(L(21)))),
     serr ? dv("bnr wn wr", tr("settings.json has an error. Using your last good settings.|配置文件有误，暂时沿用上次的有效设置。")) : null,
+    dv("sf", sp("s t2", tr("Theme|外观")), tsg),
     dv("sgr", ...sels.map(([k, l, o, c]) => fd(l, mkSel(k, o, c))),
       fd("FX rate (1 USD)|汇率（1 USD）", numI(K_FX, u[K_FX] || 7.2, .01, .01, 1e3)),
       fd("Suggest /compact (K Tokens)|建议 /compact 阈值（万 Token）", numI(K_CTH, rd((u[K_CTH] || 36e4) / (z ? 1e4 : 1e3)), z ? 1 : 10, z ? 10 : 100, z ? 200 : 2e3))),
@@ -740,7 +754,7 @@ const patchHandoffView = (): void => {
   if (sig === lastHandoffSig) return;
   lastHandoffSig = sig;
   if (!c) return setCh(uHl, [dv("cd em", mkEmb(0, 1)[0], dv("", L(0)))]);
-  const card = (dc: string | 0, tt: string, bc: string, bt0: string, ns: DomChild[], as: DomChild[]): HTMLDivElement => dv("cd", dv("jb", dv("r f", mkEmb(dc)[0], sp("wm e", tt), mkId(c[K_CID], 1)), sp(`bd ${bc}`, bt0)), ns.length && dv("pl g4 t2", ...ns), as.length && dv("ac je bt0", ...as));
+  const card = (dc: string | 0, tt: string, bc: string, bt0: string, ns: DomChild[], as: DomChild[]): HTMLDivElement => dv("cd", dv("jb", dv("r f", mkEmb(dc)[0], sp("wm e", tt), mkId(c[K_CID], 1)), sp(`bd ${bc}`, bt0)), ns.length && dv("pl g4 t2", ...ns), as.length && dv("ac je bt0 abg", ...as));
   if (c.mode === HB || c.blocked) return setCh(uHl, [card(0, L(13), "in", L(3), (c.reasons || []).map((r) => dv("wr", `· ${r}`)), [])]);
   const rs = num(c[K_RSC]), done = handoffStatus === "sent" || handoffStatus === "compacted", isCmp = c.kind === "compact", rL = L(isCmp ? 10 : 5);
   const [bCls, bTxt] = ({ sending: ["wn", rL], sent: ["ok", L(15)], compacted: ["ok", L(16)], old: ["t3", L(14)] } as Record<string, [string, string]>)[handoffStatus] || ["in", handoffStatus === "pending" && c[K_AAH] ? rL : rs > 0 ? subTxt(rs) : L(4)];
@@ -786,6 +800,7 @@ const render = (): void => {
   cl(sw, "on", allowAutoHandoff); ar(sw, "checked", S(allowAutoHandoff)); sw.title = L(7); setTxt(swL, L(6));
 
   const split = isAct && pinCnt > 0 && recCnt > 0, all = split ? [...recItems, ...orpItems] : [...pinItems, ...recItems, ...orpItems];
+  cl(uGr, "s2", split);
   hd(uPG, !split); hd(uPGh, !split); if (split) setTxt(uPGh, `${L(25)} · ${pinCnt}`); patchRowList(uPLs, split ? pinItems : [], pinNodes);
   hd(uRG, !all.length); hd(uRGh, !split); if (split) setTxt(uRGh, `${L(26)} · ${recCnt}`); patchSessionList(all);
   const capShown = showSubs ? num(s.shown_subagent_count) : isArch ? arN : 0, capTotal = num(showSubs ? subTot : isArch ? archTot : 0);
@@ -870,6 +885,8 @@ function maybeAutoRelay(p: PendingGrant | null | undefined, isInline: boolean): 
 function applySnapshot(snap: SnapshotData, persist = true): void {
   if (typeof snap[K_ST]?.[K_AAH] === "boolean") allowAutoHandoff = snap[K_ST][K_AAH];
   if (!langLocked && snap[K_ST]?.lang) { const p = parseLoc(snap[K_ST].lang); if (p) DE.lang = lang = p; }
+  if (!themeLocked && snap[K_US]?.[K_TH]) { themePref = parseTheme(snap[K_US][K_TH]); bridge.setThemePreference?.(themePref); }
+  if (snap[K_US]?.[K_LHT]) lastHostTheme = parseHostTheme(snap[K_US][K_LHT]);
   if (snap[K_DIG]) lastDigest = snap[K_DIG];
   snapshot = snap;
   if (persist && viewMode === DB && snap.mode === K_SN0) {
@@ -969,7 +986,7 @@ const toggleAutoHandoff = async (): Promise<void> => {
 const saveSettings = async (): Promise<void> => {
   if (!uSet || !canCallTools || settingsSaving) return;
   const g = (k: string): HTMLInputElement | HTMLSelectElement | null => uSet.querySelector(`[data-s="${k}"]`), gv = (k: string): string | undefined => g(k)?.value, ri = (k: string, a: number, b: number): number => clm(rd(num(gv(k))), a, b), bv = Number(gv(K_BP) ?? 0), z = isZh();
-  const args = { action: K_SP, lang: gv("lang") || "auto", [K_CC2]: gv(K_CC2) || "auto", [K_FX]: clm(num(gv(K_FX)) || 7.2, .01, 1e3), [K_PI]: ri(K_PI, 0, 300), [K_BP]: bv < 0 ? -1 : ri(K_BP, 0, 3600), [K_AAH]: !!(g(K_AAH) as HTMLInputElement | null)?.checked, [K_CTH]: clm(rd((num(gv(K_CTH)) || (z ? 36 : 360)) * (z ? 1e4 : 1e3)), 1e4, 2e6) };
+  const args = { action: K_SP, lang: gv("lang") || "auto", [K_TH]: themePref, [K_CC2]: gv(K_CC2) || "auto", [K_FX]: clm(num(gv(K_FX)) || 7.2, .01, 1e3), [K_PI]: ri(K_PI, 0, 300), [K_BP]: bv < 0 ? -1 : ri(K_BP, 0, 3600), [K_AAH]: !!(g(K_AAH) as HTMLInputElement | null)?.checked, [K_CTH]: clm(rd((num(gv(K_CTH)) || (z ? 36 : 360)) * (z ? 1e4 : 1e3)), 1e4, 2e6) };
   settingsSaving = true; settingsSig = ""; render();
   try {
     const res = await uiAct(args), sc = res?.[K_SC2] as SetPrefsPayload | undefined;
@@ -989,6 +1006,13 @@ const ACT: Record<string, (id: string, ev: MouseEvent) => unknown> = {
   ref: async () => (await ensureConnected()) && void refreshSnapshot(true, true),
   aut: () => { (autoRefresh = !autoRefresh) ? scheduleNextPoll() : cancelPoll(); render(); },
   cfg: () => { settingsOpen = !settingsOpen; settingsSig = ""; render(); },
+  thm: (id) => {
+    const next = parseTheme(id);
+    themePref = next; bridge.setThemePreference?.(next); syncThemeUi();
+    if (!canCallTools) return;
+    const g = ++themeSeq; themeLocked = g;
+    void uiAct({ action: K_SP, [K_TH]: next }).then((r) => { const sc = r?.[K_SC2] as SetPrefsPayload | undefined; if (sc?.[K_US] && snapshot) Object.assign(snapshot, sc); }).catch(() => {}).finally(() => { if (themeLocked === g) themeLocked = 0; });
+  },
   svs: saveSettings, csp: (p) => p && copyText(p, L(1)), tab: (id) => id && setFilterTab(id as FilterTab),
   aho: toggleAutoHandoff, row: (id) => { if (id) { openRowId = openRowId === id ? null : id; render(); } },
   dst: runDistill, cdp: (id) => ACT.csp(cDist.get(id)?.[K_SN] || "", {} as MouseEvent),
@@ -1068,7 +1092,14 @@ bridge.ontoolresult = (result) => {
   }
 };
 
-const syncHostContext = (ctx: HostContext | null | undefined): void => { applyHostContext(ctx); if (syncLoc(ctx?.locale)) render(); };
+const syncHostContext = (ctx: HostContext | null | undefined): void => { if (syncLoc(ctx?.locale)) render(); };
+const persistHostTheme = (ht: "light" | "dark"): void => {
+  if (!canCallTools || ht === lastHostTheme) return;
+  const prev = lastHostTheme;
+  lastHostTheme = ht;
+  void uiAct({ action: K_SP, [K_LHT]: ht }).then((r) => { if (r?.[K_ERR] && lastHostTheme === ht) lastHostTheme = prev; }).catch(() => { if (lastHostTheme === ht) lastHostTheme = prev; });
+};
+bridge.onhostthemechanged = persistHostTheme;
 
 bridge.onhostcontextchanged = (ctx, fullCtx) => { syncHostContext(fullCtx || ctx); if ((ctx?.containerDimensions || ctx?.displayMode) && canForceDb()) forceNow(); };
 bridge.onteardown = () => { cancelPoll(); cancelAutoCmp(); obsRo?.disconnect(); obsIo?.disconnect(); return {}; };
@@ -1079,6 +1110,7 @@ const ensureConnected = async (): Promise<boolean> => {
     await bridge.connect(); syncHostContext(bridge.getHostContext());
     const caps = bridge.getHostCapabilities();
     canMessage = !!caps?.message; canCallTools = !!caps?.serverTools;
+    const ht = bridge.getResolvedHostTheme?.(); if (ht) persistHostTheme(ht);
     Object.assign(DE.dataset, { canMsg: S(+canMessage), ct: S(+canCallTools) });
     errorText = ""; render(); scheduleNextPoll(); kickRelay(); return canCallTools;
   } catch (err: unknown) { errorText = `${(err as { message?: unknown } | null)?.message || err}`; loadingInitial = false; render(); return false; }
@@ -1087,6 +1119,7 @@ const ensureConnected = async (): Promise<boolean> => {
 const shouldSkipBootRefresh = (): boolean => !bootOverridden && !!(boot && boot.mode === K_SN0 && typeof boot.bootTs === "number" && now() - boot.bootTs < 2500);
 const bootPanel = async (): Promise<void> => {
   setupRevealObservers();
+  bridge.setThemePreference?.(themePref);
   if (snapshot) applySnapshot(snapshot, false);
   if (!bootOverridden && boot?.mode === K_SN0) saveCachedSnap(boot, typeof boot.bootTs === "number" ? boot.bootTs : now());
   render();

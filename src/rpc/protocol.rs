@@ -30,8 +30,8 @@ use crate::rpc::tools::{
 };
 use crate::settings::{
     abbreviate_home_path, expand_tilde, read_line_bounded, update_settings_file_atomic,
-    validate_pref_currency, validate_pref_lang, BoundedLine, SettingsPatch, MAX_LINE_BYTES,
-    PANEL_HTML_ENV,
+    validate_pref_currency, validate_pref_lang, validate_pref_last_host_theme, validate_pref_theme,
+    BoundedLine, SettingsPatch, MAX_LINE_BYTES, PANEL_HTML_ENV,
 };
 
 pub const SERVER_NAME: &str = "context-radar-mcp";
@@ -406,6 +406,8 @@ fn build_ui_settings_view(
         bg_poll_interval_sec: cfg.ui.bg_poll_interval_sec,
         allow_auto_handoff: eff_allow,
         compact_threshold: cfg.context.compact_threshold,
+        theme: cfg.ui.theme.clone(),
+        last_host_theme: cfg.ui.last_host_theme.clone(),
     };
     let path_str = if !cfg.source_path.is_empty() {
         Some(abbreviate_home_path(Path::new(&cfg.source_path)))
@@ -478,15 +480,50 @@ fn attach_grant_and_rehash_inner(
     snap.digest = compute_snapshot_digest(snap);
 }
 
-fn inject_boot_html(template: &str, boot_val: &Value) -> String {
-    if template.contains(BOOT_MARKER) {
+fn effective_theme(theme: &str, last_host_theme: &str) -> &'static str {
+    let raw = if theme == "system" {
+        last_host_theme
+    } else {
+        theme
+    };
+    if raw == "light" {
+        "light"
+    } else {
+        "dark"
+    }
+}
+
+fn apply_ssr_theme(html: &str, eff_theme: &str) -> String {
+    if eff_theme != "light" {
+        return html.to_string();
+    }
+    html.replacen(
+        "style=\"background:#0B0D12;color-scheme:dark\"",
+        "data-theme=\"light\" style=\"background:#F8FAFD;color-scheme:light\"",
+        1,
+    )
+    .replacen(
+        "<meta name=\"color-scheme\" content=\"dark\">",
+        "<meta name=\"color-scheme\" content=\"light\">",
+        1,
+    )
+    .replacen(
+        "<body style=\"background:#0B0D12\">",
+        "<body style=\"background:#F8FAFD\">",
+        1,
+    )
+}
+
+fn inject_boot_html(template: &str, boot_val: &Value, eff_theme: &str) -> String {
+    let themed = apply_ssr_theme(template, eff_theme);
+    if themed.contains(BOOT_MARKER) {
         let script_assign = format!(
             "window.__CONTEXT_RADAR_BOOT__={};",
             serialize_boot_json(boot_val)
         );
-        template.replacen(BOOT_MARKER, &script_assign, 1)
+        themed.replacen(BOOT_MARKER, &script_assign, 1)
     } else {
-        template.to_string()
+        themed
     }
 }
 
@@ -503,7 +540,12 @@ fn render_and_cache_panel_boot(
     if let Some(obj) = boot_val.as_object_mut() {
         obj.insert("bootTs".to_string(), json!(now_epoch_ms()));
     }
-    let rendered = inject_boot_html(template, &boot_val);
+    let eff_theme = snap
+        .ui_settings
+        .as_ref()
+        .map(|u| effective_theme(&u.theme, &u.last_host_theme))
+        .unwrap_or("dark");
+    let rendered = inject_boot_html(template, &boot_val, eff_theme);
     hub.put_rendered_panel(RenderedPanelCache {
         path: panel_path,
         mtime_ns,
@@ -819,6 +861,32 @@ impl McpDaemon {
                 let poll_interval_sec = args.get("poll_interval_sec").and_then(Value::as_u64);
                 let bg_poll_interval_sec = args.get("bg_poll_interval_sec").and_then(Value::as_i64);
                 let compact_threshold = args.get("compact_threshold").and_then(Value::as_u64);
+                let theme = match args.get("theme").and_then(Value::as_str) {
+                    Some(raw) => match validate_pref_theme(raw) {
+                        Ok(norm) => Some(norm.to_string()),
+                        Err(err_msg) => {
+                            return json!({
+                                "content": [{ "type": "text", "text": err_msg }],
+                                "structuredContent": { "mode": "prefs", "error": "invalid_theme" },
+                                "isError": true
+                            });
+                        }
+                    },
+                    None => None,
+                };
+                let last_host_theme = match args.get("last_host_theme").and_then(Value::as_str) {
+                    Some(raw) => match validate_pref_last_host_theme(raw) {
+                        Ok(norm) => Some(norm.to_string()),
+                        Err(err_msg) => {
+                            return json!({
+                                "content": [{ "type": "text", "text": err_msg }],
+                                "structuredContent": { "mode": "prefs", "error": "invalid_last_host_theme" },
+                                "isError": true
+                            });
+                        }
+                    },
+                    None => None,
+                };
 
                 if (allow.is_some() || lang_pref.is_some())
                     && self
@@ -837,6 +905,8 @@ impl McpDaemon {
                     bg_poll_interval_sec,
                     allow_auto_handoff: allow,
                     compact_threshold,
+                    theme,
+                    last_host_theme,
                 };
                 let has_settings_patch = patch.lang.is_some()
                     || patch.currency_code.is_some()
@@ -844,7 +914,9 @@ impl McpDaemon {
                     || patch.poll_interval_sec.is_some()
                     || patch.bg_poll_interval_sec.is_some()
                     || patch.allow_auto_handoff.is_some()
-                    || patch.compact_threshold.is_some();
+                    || patch.compact_threshold.is_some()
+                    || patch.theme.is_some()
+                    || patch.last_host_theme.is_some();
 
                 if has_settings_patch {
                     if let Some(target_path) = self.engine.rates.watcher.target_path() {
@@ -1952,7 +2024,18 @@ impl McpDaemon {
         } else {
             let (template, _, _) = self.swr.load_html(&panel_path).map_err(|e| (-32603, e))?;
             let lang = self.engine.rates.get_lang().as_str();
-            inject_boot_html(&template, &json!({ "view": "handoff", "lang": lang }))
+            let settings = self.engine.rates.current_settings();
+            let eff_theme = effective_theme(&settings.ui.theme, &settings.ui.last_host_theme);
+            inject_boot_html(
+                &template,
+                &json!({
+                    "view": "handoff",
+                    "lang": lang,
+                    "theme": settings.ui.theme,
+                    "lastHostTheme": settings.ui.last_host_theme
+                }),
+                eff_theme,
+            )
         };
 
         Ok(json!({
@@ -2687,5 +2770,67 @@ mod tests {
         server.backdate_swr_cache(RESOURCE_SWR_TTL + Duration::from_secs(1));
         let _ = read_panel(&mut server);
         assert_eq!(server.engine.overview_build_count, builds_before + 1);
+    }
+
+    #[test]
+    fn resources_read_rewrites_byte0_ssr_theme_for_system_light_and_dark() {
+        let root = tempfile::tempdir().unwrap();
+        let data_root = root.path().join("antigravity");
+        let plugin_dir = root.path().join("plugin");
+        fs::create_dir_all(&data_root).unwrap();
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let panel_html = root.path().join("panel.html");
+        fs::write(
+            &panel_html,
+            "<!doctype html><html lang=\"en\" style=\"background:#0B0D12;color-scheme:dark\"><head><meta name=\"color-scheme\" content=\"dark\"></head><body style=\"background:#0B0D12\"><script type=\"module\">/*__CONTEXT_RADAR_BOOT__*/</script></body></html>",
+        )
+        .unwrap();
+
+        let engine = TelemetryEngine::new_with_plugin_data(
+            Some(data_root),
+            Some(plugin_dir.clone()),
+            None,
+            Some(None),
+        );
+        let grants = RelayGrantStore::new(plugin_dir.join("relay_grants.json"));
+        let mut server = McpDaemon::new(Some(engine), Some(grants), Some(panel_html));
+        let _ = server.handle_request(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": { "extensions": { APPS_EXTENSION: { "mimeTypes": [APP_MIME] } } }
+            }
+        }));
+
+        // Default system + dark -> Dark Byte-0 SSR
+        let dark_res = server
+            .handle_request(&json!({ "jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": { "uri": PANEL_URI } }))
+            .unwrap();
+        let dark_html = dark_res["result"]["contents"][0]["text"].as_str().unwrap();
+        assert!(dark_html.contains("style=\"background:#0B0D12;color-scheme:dark\""));
+        assert!(dark_html.contains("<meta name=\"color-scheme\" content=\"dark\">"));
+        assert!(dark_html.contains("<body style=\"background:#0B0D12\">"));
+
+        // Persist last_host_theme = "light" with theme = "system" -> Light Byte-0 SSR
+        let pref_res = server
+            .handle_request(&json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": { "name": "context_radar_ui_action", "arguments": { "action": "set_prefs", "theme": "system", "last_host_theme": "light" } }
+            }))
+            .unwrap();
+        assert_eq!(pref_res["result"]["isError"], false);
+        assert_eq!(
+            pref_res["result"]["structuredContent"]["ui_settings"]["last_host_theme"],
+            "light"
+        );
+
+        let light_res = server
+            .handle_request(&json!({ "jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": { "uri": PANEL_URI } }))
+            .unwrap();
+        let light_html = light_res["result"]["contents"][0]["text"].as_str().unwrap();
+        assert!(light_html
+            .contains("data-theme=\"light\" style=\"background:#F8FAFD;color-scheme:light\""));
+        assert!(light_html.contains("<meta name=\"color-scheme\" content=\"light\">"));
+        assert!(light_html.contains("<body style=\"background:#F8FAFD\">"));
     }
 }
