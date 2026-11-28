@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.5](https://github.com/eatingDream-antigravity-plugins/context-radar/compare/v1.6.4...v1.6.5) (2026-11-28)
+
+
+### Bug Fixes
+
+* **panel:** adopt Panel Kit v0.4.2 theme and high-density compact layout ([a4d6e35](https://github.com/eatingDream-antigravity-plugins/context-radar/commit/a4d6e353b839e3ec8136f38fbf306df5e0861d85))
+
 ## [1.6.4](https://github.com/eatingDream-antigravity-plugins/context-radar/compare/v1.6.3...v1.6.4) (2026-11-28)
 
 
