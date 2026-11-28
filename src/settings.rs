@@ -198,6 +198,31 @@ pub(crate) fn validate_pref_currency(raw: &str) -> Result<Option<&'static str>, 
     Err("invalid currency_code; expected auto, USD, or CNY".to_string())
 }
 
+pub(crate) fn validate_pref_theme(raw: &str) -> Result<&'static str, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("system") {
+        return Ok("system");
+    }
+    if trimmed.eq_ignore_ascii_case("light") {
+        return Ok("light");
+    }
+    if trimmed.eq_ignore_ascii_case("dark") {
+        return Ok("dark");
+    }
+    Err("invalid theme; expected system, light, or dark".to_string())
+}
+
+pub(crate) fn validate_pref_last_host_theme(raw: &str) -> Result<&'static str, String> {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("light") {
+        return Ok("light");
+    }
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("dark") {
+        return Ok("dark");
+    }
+    Err("invalid last_host_theme; expected light or dark".to_string())
+}
+
 pub const DEFAULT_CONTEXT_LIMIT: u64 = 512_000;
 pub const DEFAULT_WARN_THRESHOLD: u64 = 300_000;
 pub const DEFAULT_COMPACT_THRESHOLD: u64 = 360_000;
@@ -606,11 +631,25 @@ pub struct GuardsConfig {
     pub exec_gate: Value,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiConfig {
     pub poll_interval_sec: u64,
     pub bg_poll_interval_sec: i64,
     pub allow_auto_handoff: Option<bool>,
+    pub theme: String,
+    pub last_host_theme: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_sec: 0,
+            bg_poll_interval_sec: 0,
+            allow_auto_handoff: None,
+            theme: "system".to_string(),
+            last_host_theme: "dark".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -635,6 +674,8 @@ pub struct SettingsPatch {
     pub bg_poll_interval_sec: Option<i64>,
     pub allow_auto_handoff: Option<bool>,
     pub compact_threshold: Option<u64>,
+    pub theme: Option<String>,
+    pub last_host_theme: Option<String>,
 }
 
 fn val_u64(v: Option<&Value>, default: u64, min: u64) -> u64 {
@@ -983,6 +1024,20 @@ pub fn parse_settings_value(raw: &Value, source_path: &str, generation: u64) -> 
     let allow_auto_handoff = ui_obj
         .and_then(|o| o.get("allow_auto_handoff"))
         .and_then(Value::as_bool);
+    let theme = ui_obj
+        .and_then(|o| o.get("theme"))
+        .or_else(|| obj.get("theme"))
+        .and_then(Value::as_str)
+        .and_then(|raw| validate_pref_theme(raw).ok())
+        .unwrap_or("system")
+        .to_string();
+    let last_host_theme = ui_obj
+        .and_then(|o| o.get("last_host_theme"))
+        .or_else(|| obj.get("last_host_theme"))
+        .and_then(Value::as_str)
+        .and_then(|raw| validate_pref_last_host_theme(raw).ok())
+        .unwrap_or("dark")
+        .to_string();
 
     Settings {
         generation,
@@ -997,6 +1052,8 @@ pub fn parse_settings_value(raw: &Value, source_path: &str, generation: u64) -> 
             poll_interval_sec,
             bg_poll_interval_sec,
             allow_auto_handoff,
+            theme,
+            last_host_theme,
         },
     }
 }
@@ -1146,6 +1203,8 @@ pub fn update_settings_file_atomic(target: &Path, patch: &SettingsPatch) -> Resu
     if patch.poll_interval_sec.is_some()
         || patch.bg_poll_interval_sec.is_some()
         || patch.allow_auto_handoff.is_some()
+        || patch.theme.is_some()
+        || patch.last_host_theme.is_some()
     {
         let ui = root_obj
             .entry("ui".to_string())
@@ -1163,6 +1222,14 @@ pub fn update_settings_file_atomic(target: &Path, patch: &SettingsPatch) -> Resu
         }
         if let Some(allow) = patch.allow_auto_handoff {
             uobj.insert("allow_auto_handoff".into(), Value::Bool(allow));
+        }
+        if let Some(ref raw_theme) = patch.theme {
+            let norm = validate_pref_theme(raw_theme)?;
+            uobj.insert("theme".into(), Value::String(norm.to_string()));
+        }
+        if let Some(ref raw_lht) = patch.last_host_theme {
+            let norm = validate_pref_last_host_theme(raw_lht)?;
+            uobj.insert("last_host_theme".into(), Value::String(norm.to_string()));
         }
     }
 
